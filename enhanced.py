@@ -3,7 +3,7 @@ import argparse,collections,datetime,hashlib,json,pathlib,re,sys,traceback,zipfi
 from inspector import decode,parse_wifi,checks,row,CONFIG
 from shipping_validator import pass_rules,DEFAULTS
 from report import make_report
-VERSION='1.5.0'
+VERSION='1.5.2'
 DIR=pathlib.Path(__file__).resolve().parent
 
 def entries(path):
@@ -85,8 +85,39 @@ def parse_bob(path,txt):
  out.extend(parse_bob_eye(path,txt))
  return out
 
-def audit(input_path,outdir):
+def parse_coupling(path,txt):
+ """Extract per-antenna compensated CW1600 power and the limit from the same test block."""
+ lines=txt.splitlines(); starts=[i for i,l in enumerate(lines) if re.search(r'^\s*##\s*测试项：\s*(?:2\.4G|5G)\s*天线\s*\d+\s*功率',l)]
+ out=[]
+ for i,start in enumerate(starts):
+  end=starts[i+1] if i+1<len(starts) else len(lines)
+  # Stop at next (different) test section; don't consume status from elsewhere.
+  for j in range(start+1,end):
+   if re.search(r'^\s*##\s*测试项：',lines[j]):end=j;break
+  head=lines[start]; band='2.4G' if '2.4G' in head else '5G'; antm=re.search(r'天线\s*(\d+)',head);ant='ANT'+str(int(antm.group(1))+1) if antm else ''
+  block=lines[start:end]
+  for j,l in enumerate(block):
+   m=re.search(r'补偿后功率\s*[：:]\s*(-?\d+(?:\.\d+)?)\s*dBm',l,re.I)
+   if not m:continue
+   v=float(m.group(1));low=high=None;limit_line=0
+   for k in range(j+1,min(j+13,len(block))):
+    lm=re.search(r'标准范围\s*[：:]\s*(-?\d+(?:\.\d+)?)\s*[~～]\s*(-?\d+(?:\.\d+)?)\s*dBm',block[k],re.I)
+    if lm: low,high=float(lm.group(1)),float(lm.group(2));limit_line=start+k+1;break
+   if low is None:
+    out.append(row(path,'Coupling',f'{band} {ant} NFT功率','愷安 V1.1: 17.5~25.5 dBm',v,'待確認',start+j+1,l,ant=ant,note='Log 未顯示可配對的標準範圍，無法核實實際程式 Limit'))
+   else:
+    # Kaian V1.1 NFT 2.4G/5G 54M CH3/CH40 both 17.5~25.5.
+    actual_pass=17.5<=v<=25.5
+    status='規格差異' if abs(low-17.5)>1e-6 or abs(high-25.5)>1e-6 else 'PASS' if actual_pass and low<=v<=high else 'FAIL'
+    out.append(row(path,'Coupling',f'{band} {ant} NFT功率','17.5~25.5 dBm (愷安V1.1 NFT)',v,status,start+j+1,l,ant=ant,low=low,high=high,note=f'Log 標準範圍行號 {limit_line}；使用補償後功率，不使用儀表原始功率'))
+ if not out:
+  out.append(row(path,'Coupling','NFT 功率量測','須有逐天線補償後功率及Limit','未找到可配對量測','待確認',0,note='已辨識耦合站，但無法確認數值測試；非產品FAIL'))
+ return out
+
+def audit(input_path,outdir,progress=None):
  outdir=pathlib.Path(outdir);outdir.mkdir(parents=True,exist_ok=True)
+ def notify(message):
+  if progress:progress(message)
  stamp=datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')
  execution=outdir/f'RUN_LOG_{stamp}.txt'; test=outdir/f'TEST_LOG_{stamp}.csv';debug=outdir/f'DEBUG_RECORD_{stamp}.txt';report=outdir/f'GRG4372_Audit_{stamp}.xlsx'
  rows=[];files=[];counts=collections.Counter();exception_count=0;sn_to_files=collections.defaultdict(set);write_count=0
@@ -94,10 +125,11 @@ def audit(input_path,outdir):
   def emit(msg):run.write(datetime.datetime.now().isoformat(timespec='seconds')+' '+msg+'\n');run.flush()
   tlog.write('file,category,status,item,line\n')
   emit(f'START version={VERSION} input_name={pathlib.Path(input_path).name} policy=FULL_AUDIT')
+  notify('開始讀取並分類 Log')
   for path,txt in entries(input_path):
    c=category(path,txt);counts[c]+=1
    try:
-    r=parse_wifi(path,txt) if c=='WiFi' else parse_bob(path,txt) if c=='BOB' else checks(path,txt,c)
+    r=parse_wifi(path,txt) if c=='WiFi' else parse_bob(path,txt) if c=='BOB' else parse_coupling(path,txt) if c=='Coupling' else checks(path,txt,c)
     if c=='InformationWrite':
      r,extra=writing(path,txt);write_count+=1
      sn=extra['values'].get('SN');
@@ -108,6 +140,7 @@ def audit(input_path,outdir):
      tlog.write('"'+path.replace('"','')+'",'+c+','+a['result']+','+str(a['item']).replace(',',';')+','+str(a['line'])+'\n')
     rows.extend(r);files.append({'file':path,'category':c,'lines':len(txt.splitlines()),'findings':len(r)})
     dbg.write('FILE sha256='+hashlib.sha256(txt.encode('utf-8')).hexdigest()+' station='+c+' measures='+str(len(r))+' file='+path+'\n')
+    if len(files)%10==0:notify(f'已解析 {len(files)} 份 Log：{c} / {pathlib.PurePosixPath(path).name}')
    except Exception as ex:
     exception_count+=1;dbg.write('ERROR '+path+': '+traceback.format_exc()+'\n');emit('ERROR file='+path+' error='+type(ex).__name__)
     rows.append(row(path,c,'解析例外','必須成功解析',type(ex).__name__,'待確認',0));files.append({'file':path,'category':c,'lines':len(txt.splitlines()),'findings':0})
@@ -118,6 +151,7 @@ def audit(input_path,outdir):
   emit('STATION_COUNTS '+json.dumps(counts,ensure_ascii=False))
   emit('RESULT_COUNTS '+json.dumps(states,ensure_ascii=False))
   emit(f'FILES={len(files)} WRITE_LOGS={write_count} EXCEPTIONS={exception_count}')
+  notify('解析完成，正在產生總報告 Excel')
   make_report(rows,files,states,report,CONFIG)
   # One full workbook plus one independent workbook per station, preserving original findings.
   station_defs=[('RF','WiFi',('WiFi',)),('BOB','BOB',('BOB',)),
@@ -132,24 +166,59 @@ def audit(input_path,outdir):
    # Exclude missing-station markers from individual station reports; they remain in the full report.
    if not subset_files:continue
    target=outdir/f'GRG4372_{label}_{stamp}.xlsx'
+   notify(f'正在輸出 {label} Excel（{len(subset_files)} 份 Log）')
    make_report(subset,subset_files,collections.Counter(r['result'] for r in subset if r['category']!='ParserStatus'),target,CONFIG)
    station_reports[label]=str(target)
    allocation[label]={'files':len(subset_files),'rows':len(subset)}
    emit('STATION_REPORT='+label+' files='+str(len(subset_files))+' rows='+str(len(subset))+' path='+str(target))
   from cpk_analysis import produce_cpk_reports
+  notify('正在計算並輸出 RF／BOB 良品 Cpk')
   cpk_reports=produce_cpk_reports(rows,files,outdir,stamp,CONFIG)
   for key,value in cpk_reports.items():emit('CPK_REPORT='+key+' path='+value)
   emit('REPORT='+str(report));emit('STATION_REPORT_SUMMARY '+json.dumps(allocation,ensure_ascii=False));emit('END')
+  notify('完成：全部 Excel 與 Run/Test/Debug Log 已輸出')
  return {'report':str(report),'run_log':str(execution),'test_log':str(test),'debug_log':str(debug),'files':len(files),'stations':dict(counts),'results':dict(states),'exceptions':exception_count,'station_reports':station_reports,'cpk_reports':cpk_reports,'report_allocation':allocation}
+
+def gui(input_path,outdir):
+ import tkinter as tk,threading,queue,os
+ from tkinter import ttk,messagebox
+ root=tk.Tk();root.title('GRG4372 LogInspector V1.5.2｜執行狀態');root.geometry('760x440');root.minsize(640,360)
+ frame=ttk.Frame(root,padding=14);frame.pack(fill='both',expand=True)
+ ttk.Label(frame,text='GRG-4372u 產測 Log 自動查核',font=('Microsoft JhengHei UI',15,'bold')).pack(anchor='w')
+ ttk.Label(frame,text='來源：'+str(input_path),wraplength=710).pack(anchor='w',pady=(8,4))
+ status=tk.StringVar(value='準備開始');ttk.Label(frame,textvariable=status).pack(anchor='w',pady=5)
+ bar=ttk.Progressbar(frame,mode='indeterminate');bar.pack(fill='x',pady=6);bar.start(12)
+ display=tk.Text(frame,height=13,wrap='word',state='disabled');display.pack(fill='both',expand=True)
+ actions=ttk.Frame(frame);actions.pack(fill='x',pady=(8,0));open_btn=ttk.Button(actions,text='開啟報告資料夾',state='disabled',command=lambda:os.startfile(os.path.abspath(outdir)));open_btn.pack(side='right')
+ q=queue.Queue();result_holder={}
+ def worker():
+  try:result_holder['result']=audit(input_path,outdir,progress=lambda msg:q.put(('progress',msg)));q.put(('done','完成'))
+  except BaseException as ex:
+   import traceback;result_holder['error']=traceback.format_exc();q.put(('error',str(ex)))
+ def poll():
+  try:
+   while True:
+    typ,msg=q.get_nowait()
+    if typ=='progress':
+     status.set(msg);display.configure(state='normal');display.insert('end',msg+'\n');display.see('end');display.configure(state='disabled')
+    elif typ=='done':
+     bar.stop();bar.configure(mode='determinate',value=100);status.set('✅ 執行完成：'+str(result_holder['result']['files'])+' 份 Log，報告已輸出');open_btn.configure(state='normal');messagebox.showinfo('查核完成','全部輸出完成。\n\n請點擊「開啟報告資料夾」查看 RF／BOB Excel 與執行紀錄。')
+    else:
+     bar.stop();status.set('❌ 執行失敗：'+msg);display.configure(state='normal');display.insert('end',result_holder.get('error','')+'\n');display.configure(state='disabled');messagebox.showerror('查核失敗',msg+'\n請檢查Debug記錄')
+  except queue.Empty:pass
+  if bar.cget('mode')=='indeterminate':root.after(120,poll)
+ threading.Thread(target=worker,daemon=True).start();root.after(120,poll);root.mainloop()
+ return 0 if 'result' in result_holder else 2
 
 def main(argv=None):
  p=argparse.ArgumentParser();p.add_argument('input',nargs='?');p.add_argument('-o','--output-dir',default='audit_output');args=p.parse_args(argv)
  if not args.input:
   import tkinter as tk
-  from tkinter import filedialog,messagebox
+  from tkinter import filedialog
   root=tk.Tk();root.withdraw();args.input=filedialog.askopenfilename(title='選擇ZIP／LOG',filetypes=[('Log archives','*.zip *.log *.txt')]);root.destroy()
   if not args.input:return 1
+  return gui(args.input,args.output_dir)
  try:
-  result=audit(args.input,args.output_dir);print(json.dumps(result,ensure_ascii=False,indent=2));return 0
+  result=audit(args.input,args.output_dir,progress=lambda msg:print(msg,flush=True));print(json.dumps(result,ensure_ascii=False,indent=2));return 0
  except Exception as e:print(type(e).__name__,str(e),file=sys.stderr);return 2
 if __name__=='__main__':sys.exit(main())
