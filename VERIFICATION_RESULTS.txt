@@ -1,0 +1,13 @@
+V1.2 Release Verification
+Python compileall: PASS
+unittest: 10 PASS
+DVT source log files: 311
+Station files: 311
+Allocated rows: 5194
+Report rows: 5194
+Parse exceptions: 0
+Output Excel count: 7 (1 full + 6 stations)
+RF=25, BOB=95, Throughput=48, Coupling=48, InformationWrite=48, InformationCheck=47
+No RF/BOB limit semantics changed from V1.1.
+Windows EXE: not verified in Windows host; GitHub Actions build workflow included.
+Known: InformationCheck results include Customization rows, station segmentation uses source file identity.

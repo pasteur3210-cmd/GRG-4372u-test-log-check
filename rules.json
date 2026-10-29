@@ -1,0 +1,15 @@
+{
+ "metadata":{"model":"GRG-4372u","test_standard":"愷安生產測試標準 V1.1","production_notice":"DIG 生產注意事項 R1.3 (2026-10-15)","customer":"DIGI"},
+ "customization":{"factory":"CH","flash":"Micron MT29F2G01ABAGDWB","hw_version":"1.2","production_fw":"FTY-1.0.0b5","shipping_fw":"DIG-1.0.6","sn_length":20,"excluded_chars":"0oO1lIi9gq2zZDQ6b8B","ssid_prefix_2g":"DIGIFIBRA-","ssid_prefix_5g":"DIGIFIBRA-PLUS-","allowed_key_symbols":"!%*+,.:=[]^_{}#&@<>","key_length":12},
+ "wifi_verification":{
+ "2.4G|OFDM54":{"power":[19,22],"evm":[-55,-25],"frequency":[-10,10],"mask":[0,5],"per":[900,1000]},
+ "2.4G|HE20-MCS0":{"power":[19.5,22.5],"evm":[-55,-5],"frequency":[-10,10],"mask":[0,5],"per":[900,1000]},
+ "2.4G|HE40-MCS11":{"power":[16.5,19.5],"evm":[-55,-35],"frequency":[-10,10],"mask":[0,5],"per":[900,1000]},
+ "2.4G|EHT40-MCS13":{"power":[15.5,18.5],"evm":[-55,-38],"frequency":[-10,10],"mask":[0,5],"per":[900,1000]},
+ "5G|OFDM54":{"power":[19,22],"evm":[-55,-25],"frequency":[-10,10],"mask":[0,5],"per":[920,1000]},
+ "5G|HE20-MCS0":{"power":[20,23],"evm":[-55,-5],"frequency":[-10,10],"mask":[0,5],"per":[900,1000]},
+ "5G|HE80-MCS11":{"power":[16.5,19.5],"evm":[-55,-35],"frequency":[-10,10],"mask":[0,5],"per":[900,1000]},
+ "5G|HE160-MCS11":{"power":[15,18],"evm":[-55,-35],"frequency":[-10,10],"mask":[0,5],"per":[900,1000]},
+ "5G|EHT160-MCS13":{"power":[13.5,16.5],"evm":[-55,-38],"frequency":[-10,10],"mask":[0,5],"per":[900,1000]}
+ }
+}

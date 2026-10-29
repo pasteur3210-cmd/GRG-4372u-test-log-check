@@ -1,0 +1,3 @@
+artifact-tool
+openpyxl
+pyinstaller
