@@ -3,7 +3,8 @@ import argparse,collections,datetime,hashlib,json,pathlib,re,sys,traceback,zipfi
 from inspector import decode,parse_wifi,checks,row,CONFIG
 from shipping_validator import pass_rules,DEFAULTS
 from report import make_report
-VERSION='1.5.2'
+from throughput_parser import parse_throughput
+VERSION='1.5.4'
 DIR=pathlib.Path(__file__).resolve().parent
 
 def entries(path):
@@ -121,7 +122,7 @@ def audit(input_path,outdir,progress=None):
  stamp=datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')
  execution=outdir/f'RUN_LOG_{stamp}.txt'; test=outdir/f'TEST_LOG_{stamp}.csv';debug=outdir/f'DEBUG_RECORD_{stamp}.txt';report=outdir/f'GRG4372_Audit_{stamp}.xlsx'
  rows=[];files=[];counts=collections.Counter();exception_count=0;sn_to_files=collections.defaultdict(set);write_count=0
- with execution.open('w',encoding='utf-8') as run,debug.open('w',encoding='utf-8') as dbg,test.open('w',encoding='utf-8') as tlog:
+ with execution.open('w',encoding='utf-8') as run,debug.open('w',encoding='utf-8') as dbg,test.open('w',encoding='utf-8-sig') as tlog:
   def emit(msg):run.write(datetime.datetime.now().isoformat(timespec='seconds')+' '+msg+'\n');run.flush()
   tlog.write('file,category,status,item,line\n')
   emit(f'START version={VERSION} input_name={pathlib.Path(input_path).name} policy=FULL_AUDIT')
@@ -129,7 +130,7 @@ def audit(input_path,outdir,progress=None):
   for path,txt in entries(input_path):
    c=category(path,txt);counts[c]+=1
    try:
-    r=parse_wifi(path,txt) if c=='WiFi' else parse_bob(path,txt) if c=='BOB' else parse_coupling(path,txt) if c=='Coupling' else checks(path,txt,c)
+    r=parse_wifi(path,txt) if c=='WiFi' else parse_bob(path,txt) if c=='BOB' else parse_coupling(path,txt) if c=='Coupling' else parse_throughput(path,txt) if c=='Throughput' else checks(path,txt,c)
     if c=='InformationWrite':
      r,extra=writing(path,txt);write_count+=1
      sn=extra['values'].get('SN');
@@ -180,34 +181,69 @@ def audit(input_path,outdir,progress=None):
  return {'report':str(report),'run_log':str(execution),'test_log':str(test),'debug_log':str(debug),'files':len(files),'stations':dict(counts),'results':dict(states),'exceptions':exception_count,'station_reports':station_reports,'cpk_reports':cpk_reports,'report_allocation':allocation}
 
 def gui(input_path,outdir):
- import tkinter as tk,threading,queue,os
- from tkinter import ttk,messagebox
- root=tk.Tk();root.title('GRG4372 LogInspector V1.5.2｜執行狀態');root.geometry('760x440');root.minsize(640,360)
+ """Keep Tk on the main thread; worker communicates solely through a queue.
+ Completion is driven by a terminal event, never by Progressbar state.
+ """
+ import tkinter as tk, threading, queue, os, time
+ from tkinter import ttk, messagebox
+ root=tk.Tk()
+ root.title('GRG4372 LogInspector V1.5.4｜執行狀態')
+ root.geometry('820x500'); root.minsize(680,400)
  frame=ttk.Frame(root,padding=14);frame.pack(fill='both',expand=True)
  ttk.Label(frame,text='GRG-4372u 產測 Log 自動查核',font=('Microsoft JhengHei UI',15,'bold')).pack(anchor='w')
- ttk.Label(frame,text='來源：'+str(input_path),wraplength=710).pack(anchor='w',pady=(8,4))
- status=tk.StringVar(value='準備開始');ttk.Label(frame,textvariable=status).pack(anchor='w',pady=5)
+ ttk.Label(frame,text='來源：'+str(input_path),wraplength=780).pack(anchor='w',pady=(8,4))
+ status=tk.StringVar(value='準備開始')
+ ttk.Label(frame,textvariable=status).pack(anchor='w',pady=5)
  bar=ttk.Progressbar(frame,mode='indeterminate');bar.pack(fill='x',pady=6);bar.start(12)
- display=tk.Text(frame,height=13,wrap='word',state='disabled');display.pack(fill='both',expand=True)
- actions=ttk.Frame(frame);actions.pack(fill='x',pady=(8,0));open_btn=ttk.Button(actions,text='開啟報告資料夾',state='disabled',command=lambda:os.startfile(os.path.abspath(outdir)));open_btn.pack(side='right')
- q=queue.Queue();result_holder={}
+ display=tk.Text(frame,height=14,wrap='word',state='disabled');display.pack(fill='both',expand=True)
+ actions=ttk.Frame(frame);actions.pack(fill='x',pady=(8,0))
+ open_btn=ttk.Button(actions,text='開啟報告資料夾',state='disabled',command=lambda:os.startfile(os.path.abspath(outdir)))
+ open_btn.pack(side='right')
+ close_btn=ttk.Button(actions,text='關閉',command=root.destroy)
+ close_btn.pack(side='right',padx=8)
+ q=queue.Queue(); result_holder={}; state={'finished':False,'processed':0}; started=time.monotonic()
+ def append(message):
+  display.configure(state='normal');display.insert('end',str(message)+'\n');display.see('end');display.configure(state='disabled')
  def worker():
-  try:result_holder['result']=audit(input_path,outdir,progress=lambda msg:q.put(('progress',msg)));q.put(('done','完成'))
+  try:
+   result=audit(input_path,outdir,progress=lambda msg:q.put(('progress',msg)))
+   q.put(('done',result))
   except BaseException as ex:
-   import traceback;result_holder['error']=traceback.format_exc();q.put(('error',str(ex)))
+   import traceback
+   q.put(('error',(str(ex),traceback.format_exc())))
+ def finish(kind,payload):
+  if state['finished']:return
+  state['finished']=True
+  bar.stop();bar.configure(mode='determinate',maximum=100,value=100 if kind=='done' else 0)
+  elapsed=time.monotonic()-started
+  if kind=='done':
+   result_holder['result']=payload
+   status.set('✅ 執行完成：{} 份 Log（耗時 {:.1f} 秒）'.format(payload['files'],elapsed))
+   append('完成：{} 份 Log；解析例外 {}；產生 {} 份分站 Excel、{} 份 Cpk Excel'.format(payload['files'],payload['exceptions'],len(payload['station_reports']),len(payload['cpk_reports'])))
+   append('總報告：'+payload['report']);append('執行紀錄：'+payload['run_log'])
+   open_btn.configure(state='normal')
+   messagebox.showinfo('查核完成','全部報告與 Log 已輸出。\n處理 {} 份 Log，耗時 {:.1f} 秒。'.format(payload['files'],elapsed))
+  else:
+   msg,trace=payload;result_holder['error']=trace
+   status.set('❌ 執行失敗：'+msg);append('ERROR: '+trace)
+   open_btn.configure(state='normal')
+   messagebox.showerror('查核失敗',msg+'\n請查看執行紀錄')
  def poll():
+  if state['finished']:return
   try:
    while True:
-    typ,msg=q.get_nowait()
-    if typ=='progress':
-     status.set(msg);display.configure(state='normal');display.insert('end',msg+'\n');display.see('end');display.configure(state='disabled')
-    elif typ=='done':
-     bar.stop();bar.configure(mode='determinate',value=100);status.set('✅ 執行完成：'+str(result_holder['result']['files'])+' 份 Log，報告已輸出');open_btn.configure(state='normal');messagebox.showinfo('查核完成','全部輸出完成。\n\n請點擊「開啟報告資料夾」查看 RF／BOB Excel 與執行紀錄。')
-    else:
-     bar.stop();status.set('❌ 執行失敗：'+msg);display.configure(state='normal');display.insert('end',result_holder.get('error','')+'\n');display.configure(state='disabled');messagebox.showerror('查核失敗',msg+'\n請檢查Debug記錄')
+    kind,msg=q.get_nowait()
+    if kind=='progress':status.set(msg);append(msg)
+    elif kind in ('done','error'):
+     finish(kind,msg)
+     break
   except queue.Empty:pass
-  if bar.cget('mode')=='indeterminate':root.after(120,poll)
- threading.Thread(target=worker,daemon=True).start();root.after(120,poll);root.mainloop()
+  if not state['finished']:
+   # Do not test bar.cget('mode'): GUI must poll regardless of progress-bar state.
+   root.after(100,poll)
+ threading.Thread(target=worker,daemon=True).start()
+ root.after(100,poll)
+ root.mainloop()
  return 0 if 'result' in result_holder else 2
 
 def main(argv=None):
