@@ -1,3 +1,2 @@
-artifact-tool
-openpyxl
-pyinstaller
+openpyxl>=3.1,<4
+pyinstaller>=6,<7

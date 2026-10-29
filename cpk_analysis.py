@@ -9,7 +9,7 @@ from statistics import mean, stdev
 from math import isfinite
 from pathlib import Path
 import re
-from artifact_tool import Workbook, SpreadsheetFile
+from excel_compat import Workbook, SpreadsheetFile
 
 VALID={'PASS'}
 BOB_STANDARDS={'BOB TX校準功率':(2.3,2.7),'BOB 消光比校準':(12.0,13.0)}

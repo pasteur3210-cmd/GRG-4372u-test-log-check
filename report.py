@@ -1,4 +1,4 @@
-from artifact_tool import Workbook,SpreadsheetFile
+from excel_compat import Workbook,SpreadsheetFile
 from pathlib import Path
 
 def make_report(rows,files,stats,out,rules):
