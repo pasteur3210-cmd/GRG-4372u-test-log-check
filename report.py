@@ -1,10 +1,10 @@
 from excel_compat import Workbook,SpreadsheetFile
 from pathlib import Path
 
-def make_report(rows,files,stats,out,rules):
+def make_report(rows,files,stats,out,rules,station=None):
  wb=Workbook.create()
  s=wb.worksheets.add('查核總覽')
- s.get_range('A1:D1').values=[['GRG-4372u Log 自動查核 V1.5.5','','','']]
+ s.get_range('A1:D1').values=[['GRG-4372u Log 自動查核 V1.5.6','','','']]
  s.get_range('A3:B7').values=[['產品',rules['metadata']['model']],['測試依據',rules['metadata']['test_standard']],['客製化依據',rules['metadata']['production_notice']],['判定原則','測試標準與Log Limit分別核對；缺證據不判PASS'],['安全原則','報告不輸出密碼明文']]
  s.get_range('A9:B9').values=[['判定','筆數']]
  states=['PASS','不符合','規格差異','FAIL','待確認','缺少證據']
@@ -15,15 +15,29 @@ def make_report(rows,files,stats,out,rules):
  s.get_range('A:A').format.column_width=28;s.get_range('B:B').format.column_width=70
  s.freeze_panes.freeze_rows(1)
  t=wb.worksheets.add('逐筆比對')
- headers=['原始檔','類別','測試項目','測試模式','頻率 MHz','天線','核准測試標準','Log Low','Log High','實際測試值','判定','原始行號','原始證據（截斷）','備註']
+ # Per-station report: remove entirely blank columns, preserving audit essentials.
+ # Aggregate report retains the full column set for cross-station filtering.
+ cols=[('file','原始檔',42),('category','類別',16),('item','測試項目',31),
+       ('mode','測試模式',22),('freq_MHz','頻率 MHz',15),('antenna','天線',13),
+       ('standard','核准測試標準',40),('low_in_log','Log Low',15),
+       ('high_in_log','Log High',15),('actual','實際測試值',22),
+       ('result','判定',16),('line','原始行號',14),
+       ('evidence','原始證據（截斷）',65),('note','備註',60)]
+ data=[r for r in rows if r['category']!='ParserStatus']
+ # No material evidence is deleted: drop a column only if it is blank in every record.
+ if station:
+  mandatory={'file','item','result','actual'}
+  cols=[c for c in cols if c[0] in mandatory or any(r.get(c[0]) not in (None,'') for r in data)]
+ headers=[h for k,h,w in cols]
  t.get_range_by_indexes(0,0,1,len(headers)).values=[headers]
- matrix=[]
- for r in rows:
-  if r['category']=='ParserStatus':continue
-  matrix.append([r[k] for k in ['file','category','item','mode','freq_MHz','antenna','standard','low_in_log','high_in_log','actual','result','line','evidence','note']])
- for offset in range(0,len(matrix),400):t.get_range_by_indexes(1+offset,0,len(matrix[offset:offset+400]),len(headers)).values=matrix[offset:offset+400]
- t.get_range('A1:N1').format={'fill':'#13324D','font':{'bold':True,'color':'#FFFFFF'},'row_height':32}
- for a,b in {'A':30,'B':18,'C':26,'D':22,'E':14,'F':13,'G':40,'H':15,'I':15,'J':20,'K':16,'L':14,'M':60,'N':54}.items():t.get_range(f'{a}:{a}').format.column_width=b
+ for offset in range(0,len(data),400):
+  block=[[r.get(k,'') for k,h,w in cols] for r in data[offset:offset+400]]
+  t.get_range_by_indexes(1+offset,0,len(block),len(headers)).values=block
+ lastcol=chr(64+len(headers))
+ t.get_range('A1:'+lastcol+'1').format={'fill':'#13324D','font':{'bold':True,'color':'#FFFFFF'},'row_height':32}
+ for i,(k,h,width) in enumerate(cols):
+  letter=chr(65+i)
+  t.get_range(letter+':'+letter).format.column_width=width
  t.freeze_panes.freeze_rows(1)
  parser=wb.worksheets.add('程式解析紀錄')
  parser.get_range('A1:F1').values=[['原始檔','程式狀態','描述','原因','原始行號','說明']]

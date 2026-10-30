@@ -66,7 +66,7 @@ def collect(rows,rules):
 
 def build(station,grouped,out):
     wb=Workbook.create();summary=wb.worksheets.add(station+'_CPK比較')
-    headers=['測項','Mode','頻率 MHz','天線','採用標準','LSL','USL','PASS候選筆數','排除超規','納入N','平均','樣本σ','Cpk／單側指標（整體σ估計）','指標類型與限制']
+    headers=['測項','Mode','頻率 MHz','天線','採用標準','LSL','USL','PASS候選筆數','排除超規','納入N','Ppk／單側能力指標（整體σ）','指標類型與限制']
     summary.get_range_by_indexes(0,0,1,len(headers)).values=[headers]
     records=[];details=[]
     dhead=['測項','Mode','頻率 MHz','天線','來源Log','行號','實測值','採用標準','LSL','USL','是否納入','排除原因']
@@ -86,11 +86,11 @@ def build(station,grouped,out):
                 else:excluded+=1
                 details.append([item,mode,freq,ant,str(r['file']),r['line'],val,typ,low,high,'納入' if admissible else '排除','' if admissible else '超出本規格／Limit缺失'])
             avg,sd,cpk,kind=capability(sample,limits)
-            records.append([item,mode,freq,ant,typ,limits[0],limits[1],len(v),excluded,len(sample),avg,sd,cpk,kind if limits!=(None,None) else 'Log未記載有效上下限'])
+            records.append([item,mode,freq,ant,typ,limits[0],limits[1],len(v),excluded,len(sample),cpk,kind if limits!=(None,None) else 'Log未記載有效上下限'])
     if records:
         for at in range(0,len(records),250):summary.get_range_by_indexes(at+1,0,len(records[at:at+250]),len(headers)).values=records[at:at+250]
-    summary.get_range('A1:N1').format={'fill':'#173A59','font':{'color':'#FFFFFF','bold':True},'row_height':30}
-    for col,width in {'A':27,'B':20,'C':17,'D':11,'E':20,'F':12,'G':12,'H':17,'I':13,'J':12,'K':14,'L':14,'M':26,'N':47}.items():summary.get_range(col+':'+col).format.column_width=width
+    summary.get_range('A1:L1').format={'fill':'#173A59','font':{'color':'#FFFFFF','bold':True},'row_height':30}
+    for col,width in {'A':27,'B':20,'C':17,'D':11,'E':20,'F':12,'G':12,'H':17,'I':13,'J':12,'K':26,'L':47}.items():summary.get_range(col+':'+col).format.column_width=width
     summary.freeze_panes.freeze_rows(1)
     det=wb.worksheets.add(station+'_樣本追溯');det.get_range_by_indexes(0,0,1,len(dhead)).values=[dhead]
     for at in range(0,len(details),300):det.get_range_by_indexes(at+1,0,len(details[at:at+300]),len(dhead)).values=details[at:at+300]
@@ -102,7 +102,7 @@ def build(station,grouped,out):
         ['兩套規格','同一 PASS 候選資料各自按愷安 V1.1、達天 Log Limit 過濾；超規筆數獨立紀錄'],
         ['雙側公式','min((USL-平均)/(3×樣本σ),(平均-LSL)/(3×樣本σ))'],
         ['單側公式','只有 USL 時為 (USL-平均)/(3×樣本σ)，稱 Ppu；只有 LSL 時為 Ppl'],
-        ['重要統計限制','使用整體樣本標準差，故近似 Ppk/Ppu/Ppl 而非真正的組內σ Cpk；PASS-only會產生選擇偏差'],
+        ['重要統計限制','使用整體樣本標準差，故近似 Ppk/Ppu/Ppl 而非真正的組內σ Cpk；PASS-only會產生選擇偏差。平均與樣本σ用於內部運算，依V1.5.6需求不在主報表顯示'],
         ['分組','RF 依 Band／Mode／MHz／ANT／測項分組；BOB 依測項分組'],
         ['不計算','Eye Mask Success 等定性結果、未取得數值、PER單位歧義、未提供有效Limit、N<2'],
         ['BOB 規格','TX校準功率 2.3~2.7 dBm；ER校準 12~13 dB；均為雙側指標'],

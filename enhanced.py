@@ -4,7 +4,7 @@ from inspector import decode,parse_wifi,checks,row,CONFIG
 from shipping_validator import pass_rules,DEFAULTS
 from report import make_report
 from throughput_parser import parse_throughput
-VERSION='1.5.5'
+VERSION='1.5.6'
 DIR=pathlib.Path(__file__).resolve().parent
 
 def entries(path):
@@ -192,7 +192,7 @@ def audit(input_path,outdir,progress=None):
    if not subset_files:continue
    target=outdir/f'GRG4372_{label}_{stamp}.xlsx'
    notify(f'正在輸出 {label} Excel（{len(subset_files)} 份 Log）')
-   make_report(subset,subset_files,collections.Counter(r['result'] for r in subset if r['category']!='ParserStatus'),target,CONFIG)
+   make_report(subset,subset_files,collections.Counter(r['result'] for r in subset if r['category']!='ParserStatus'),target,CONFIG,station=label)
    station_reports[label]=str(target)
    allocation[label]={'files':len(subset_files),'rows':len(subset)}
    emit('STATION_REPORT='+label+' files='+str(len(subset_files))+' rows='+str(len(subset))+' path='+str(target))
