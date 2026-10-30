@@ -4,7 +4,7 @@ from inspector import decode,parse_wifi,checks,row,CONFIG
 from shipping_validator import pass_rules,DEFAULTS
 from report import make_report
 from throughput_parser import parse_throughput
-VERSION='1.5.4'
+VERSION='1.5.5'
 DIR=pathlib.Path(__file__).resolve().parent
 
 def entries(path):
@@ -87,32 +87,56 @@ def parse_bob(path,txt):
  return out
 
 def parse_coupling(path,txt):
- """Extract per-antenna compensated CW1600 power and the limit from the same test block."""
- lines=txt.splitlines(); starts=[i for i,l in enumerate(lines) if re.search(r'^\s*##\s*测试项：\s*(?:2\.4G|5G)\s*天线\s*\d+\s*功率',l)]
+ """Parse actual compensated power, logged limits and CW1600 frequency per antenna.
+
+ No PASS is inferred from a station filename, and no neighboring block's limits
+ may be borrowed. Missing/ambiguous readings remain explicit review items.
+ """
+ lines=txt.splitlines()
+ start_rx=re.compile(r'^\s*##\s*测试项\s*[：:]\s*(2\.4G|5G)\s*天线\s*(\d+)\s*功率')
+ starts=[(i,m) for i,line in enumerate(lines) if (m:=start_rx.search(line))]
  out=[]
- for i,start in enumerate(starts):
-  end=starts[i+1] if i+1<len(starts) else len(lines)
-  # Stop at next (different) test section; don't consume status from elsewhere.
-  for j in range(start+1,end):
-   if re.search(r'^\s*##\s*测试项：',lines[j]):end=j;break
-  head=lines[start]; band='2.4G' if '2.4G' in head else '5G'; antm=re.search(r'天线\s*(\d+)',head);ant='ANT'+str(int(antm.group(1))+1) if antm else ''
+ for idx,(start,m) in enumerate(starts):
+  end=starts[idx+1][0] if idx+1<len(starts) else len(lines)
+  # Never cross into unrelated test item, even when antenna count differs.
+  for k in range(start+1,end):
+   if re.search(r'^\s*##\s*测试项\s*[：:]',lines[k]):end=k;break
   block=lines[start:end]
-  for j,l in enumerate(block):
-   m=re.search(r'补偿后功率\s*[：:]\s*(-?\d+(?:\.\d+)?)\s*dBm',l,re.I)
-   if not m:continue
-   v=float(m.group(1));low=high=None;limit_line=0
-   for k in range(j+1,min(j+13,len(block))):
+  band=m.group(1);ant=f'ANT{int(m.group(2))+1}'
+  freqs=[(float(mm.group(1)),start+j+1) for j,line in enumerate(block)
+         if (mm:=re.search(r'信道频点\s*[：:]\s*(\d+(?:\.\d+)?)\s*MHz',line,re.I))]
+  freq=freqs[-1][0] if freqs else ''
+  expected_freq=2422.0 if band=='2.4G' else 5200.0 # NFT V1.1 CH3 / CH40
+  for j,line in enumerate(block):
+   pm=re.search(r'补偿后功率\s*[：:]\s*(-?\d+(?:\.\d+)?)\s*dBm',line,re.I)
+   if not pm:continue
+   val=float(pm.group(1)); low=high=None;limit_line=0
+   # The next limit belongs to this reading only if no subsequent reading intervenes.
+   for k in range(j+1,min(j+14,len(block))):
+    if re.search(r'补偿后功率\s*[：:]',block[k],re.I):break
     lm=re.search(r'标准范围\s*[：:]\s*(-?\d+(?:\.\d+)?)\s*[~～]\s*(-?\d+(?:\.\d+)?)\s*dBm',block[k],re.I)
-    if lm: low,high=float(lm.group(1)),float(lm.group(2));limit_line=start+k+1;break
+    if lm:
+     low,high=float(lm.group(1)),float(lm.group(2));limit_line=start+k+1;break
+   item=f'{band} {ant} NFT 補償後功率'
+   standard=f'{band} NFT CH{3 if band=="2.4G" else 40} ({expected_freq:g} MHz): 17.5~25.5 dBm'
    if low is None:
-    out.append(row(path,'Coupling',f'{band} {ant} NFT功率','愷安 V1.1: 17.5~25.5 dBm',v,'待確認',start+j+1,l,ant=ant,note='Log 未顯示可配對的標準範圍，無法核實實際程式 Limit'))
+    state='待確認';note='未取得同一測試段的Log Low/High，不可判定PASS'
+   elif len(set(x[0] for x in freqs))>1 or not freqs:
+    state='待確認';note='缺少或存在不一致的量測頻率；須確認 Channel'
+   elif abs(freq-expected_freq)>1e-6:
+    state='規格差異';note=f'測試頻率{freq:g}MHz不同於核准NFT {expected_freq:g}MHz'
+   elif abs(low-17.5)>1e-6 or abs(high-25.5)>1e-6:
+    state='規格差異';note='Log Limit不同於愷安NFT核准17.5~25.5 dBm'
    else:
-    # Kaian V1.1 NFT 2.4G/5G 54M CH3/CH40 both 17.5~25.5.
-    actual_pass=17.5<=v<=25.5
-    status='規格差異' if abs(low-17.5)>1e-6 or abs(high-25.5)>1e-6 else 'PASS' if actual_pass and low<=v<=high else 'FAIL'
-    out.append(row(path,'Coupling',f'{band} {ant} NFT功率','17.5~25.5 dBm (愷安V1.1 NFT)',v,status,start+j+1,l,ant=ant,low=low,high=high,note=f'Log 標準範圍行號 {limit_line}；使用補償後功率，不使用儀表原始功率'))
+    state='PASS' if low<=val<=high else 'FAIL'
+    note='補償後功率與Log Limit及愷安NFT標準逐項核對'
+   out.append(row(path,'Coupling',item,standard,val,state,start+j+1,line,
+                  mode='NFT CW1600',freq=freq,ant=ant,
+                  low='' if low is None else low,high='' if high is None else high,
+                  note=f'{note}；Limit行號={limit_line or "缺少"}；原始量測不等於補償後功率'))
  if not out:
-  out.append(row(path,'Coupling','NFT 功率量測','須有逐天線補償後功率及Limit','未找到可配對量測','待確認',0,note='已辨識耦合站，但無法確認數值測試；非產品FAIL'))
+  out.append(row(path,'Coupling','NFT 功率量測','需逐天線補償後功率及Log Limit','未找到可配對量測','待確認',0,
+   note='未辨識到NFT測項；非產品FAIL，須更新解析或提供完整Log'))
  return out
 
 def audit(input_path,outdir,progress=None):
@@ -187,7 +211,7 @@ def gui(input_path,outdir):
  import tkinter as tk, threading, queue, os, time
  from tkinter import ttk, messagebox
  root=tk.Tk()
- root.title('GRG4372 LogInspector V1.5.4｜執行狀態')
+ root.title('GRG4372 LogInspector '+VERSION+'｜執行狀態')
  root.geometry('820x500'); root.minsize(680,400)
  frame=ttk.Frame(root,padding=14);frame.pack(fill='both',expand=True)
  ttk.Label(frame,text='GRG-4372u 產測 Log 自動查核',font=('Microsoft JhengHei UI',15,'bold')).pack(anchor='w')
