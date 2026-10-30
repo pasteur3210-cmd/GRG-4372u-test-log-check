@@ -17,7 +17,7 @@ PARAMS={'MeasurePower':'power','TestPower':'power','EVM':'evm','FreqError':'freq
 
 def measure_info(r,rules):
     c=r['category']; item=str(r['item']); actual=r['actual']
-    if c not in ('WiFi','BOB') or r['result'] not in VALID or isinstance(actual,bool) or not isinstance(actual,(int,float)) or not isfinite(actual):return None
+    if c not in ('WiFi','BOB') or (c=='WiFi' and not re.search(r'_PASS(?:_Debug)?\.LOG$',str(r['file']),re.I)) or r['result'] not in VALID or isinstance(actual,bool) or not isinstance(actual,(int,float)) or not isfinite(actual):return None
     try:
         ll=float(r['low_in_log']) if r['low_in_log']!='' else None
         ul=float(r['high_in_log']) if r['high_in_log']!='' else None
@@ -66,14 +66,17 @@ def collect(rows,rules):
 
 def build(station,grouped,out):
     wb=Workbook.create();summary=wb.worksheets.add(station+'_CPK比較')
-    headers=['測項','Mode','頻率 MHz','天線','採用標準','LSL','USL','PASS候選筆數','排除超規','納入N','Ppk／單側能力指標（整體σ）','指標類型與限制']
+    headers=(['測項','採用標準','LSL','USL','PASS候選筆數','排除超規','納入N','Ppk／單側能力指標（整體σ）','指標類型與限制'] if station=='BOB' else ['測項','Mode','頻率 MHz','天線','採用標準','LSL','USL','PASS候選筆數','排除超規','納入N','Ppk／單側能力指標（整體σ）','指標類型與限制'])
     summary.get_range_by_indexes(0,0,1,len(headers)).values=[headers]
     records=[];details=[]
-    dhead=['測項','Mode','頻率 MHz','天線','來源Log','行號','實測值','採用標準','LSL','USL','是否納入','排除原因']
+    dhead=(['測項','來源Log','行號','實測值','採用標準','LSL','USL','是否納入','排除原因'] if station=='BOB' else ['測項','Mode','頻率 MHz','天線','來源Log','行號','實測值','採用標準','LSL','USL','是否納入','排除原因'])
     for key,v in sorted(grouped.items()):
         st,item,mode,freq,ant=key
         if st!=station:continue
-        for typ,idx in [('愷安 V1.1',0),('達天 Log 設定',1)]:
+        # Same limits produce identical metrics; emit only one summary and trace.
+        equivalent=all(ka==log for ka,log,_,_ in v)
+        standard_choices=[('愷安 V1.1／達天 Log 一致',0)] if equivalent else [('SPEC DIFF／愷安 V1.1',0),('SPEC DIFF／達天 Log 設定',1)]
+        for typ,idx in standard_choices:
             limits=v[0][idx]
             if any(z is None for z in limits) and not (item.endswith('EVM') and limits[1] is not None):
                 # Log limits missing: no fabricated limit or Cpk.
@@ -84,22 +87,32 @@ def build(station,grouped,out):
                 admissible=(low is not None or high is not None) and (low is None or val>=low) and (high is None or val<=high)
                 if admissible:sample.append(val)
                 else:excluded+=1
-                details.append([item,mode,freq,ant,str(r['file']),r['line'],val,typ,low,high,'納入' if admissible else '排除','' if admissible else '超出本規格／Limit缺失'])
+                trace=[item,mode,freq,ant,str(r['file']),r['line'],val,typ,low,high,'納入' if admissible else '排除','' if admissible else '超出本規格／Limit缺失']
+                details.append([trace[i] for i in (0,4,5,6,7,8,9,10,11)] if station=='BOB' else trace)
             avg,sd,cpk,kind=capability(sample,limits)
-            records.append([item,mode,freq,ant,typ,limits[0],limits[1],len(v),excluded,len(sample),cpk,kind if limits!=(None,None) else 'Log未記載有效上下限'])
+            record=[item,mode,freq,ant,typ,limits[0],limits[1],len(v),excluded,len(sample),cpk,kind if limits!=(None,None) else 'Log未記載有效上下限']
+            records.append([record[i] for i in (0,4,5,6,7,8,9,10,11)] if station=='BOB' else record)
     if records:
         for at in range(0,len(records),250):summary.get_range_by_indexes(at+1,0,len(records[at:at+250]),len(headers)).values=records[at:at+250]
-    summary.get_range('A1:L1').format={'fill':'#173A59','font':{'color':'#FFFFFF','bold':True},'row_height':30}
-    for col,width in {'A':27,'B':20,'C':17,'D':11,'E':20,'F':12,'G':12,'H':17,'I':13,'J':12,'K':26,'L':47}.items():summary.get_range(col+':'+col).format.column_width=width
+    summary.get_range('A1:'+('I' if station=='BOB' else 'L')+'1').format={'fill':'#173A59','font':{'color':'#FFFFFF','bold':True},'row_height':30}
+    widths=({'A':27,'B':26,'C':12,'D':12,'E':19,'F':16,'G':13,'H':30,'I':48} if station=='BOB' else {'A':27,'B':20,'C':17,'D':11,'E':24,'F':12,'G':12,'H':17,'I':13,'J':12,'K':26,'L':47})
+    for col,width in widths.items():summary.get_range(col+':'+col).format.column_width=width
     summary.freeze_panes.freeze_rows(1)
     det=wb.worksheets.add(station+'_樣本追溯');det.get_range_by_indexes(0,0,1,len(dhead)).values=[dhead]
     for at in range(0,len(details),300):det.get_range_by_indexes(at+1,0,len(details[at:at+300]),len(dhead)).values=details[at:at+300]
-    det.get_range('A1:L1').format={'fill':'#173A59','font':{'color':'#FFFFFF','bold':True}}
-    det.get_range('A:A').format.column_width=27;det.get_range('E:E').format.column_width=65
-    det.get_range('B:D').format.column_width=16;det.get_range('F:L').format.column_width=20;det.freeze_panes.freeze_rows(1)
+    det.get_range('A1:'+('I' if station=='BOB' else 'L')+'1').format={'fill':'#173A59','font':{'color':'#FFFFFF','bold':True}}
+    det.get_range('A:A').format.column_width=27
+    if station=='BOB':
+        det.get_range('B:B').format.column_width=72
+        det.get_range('C:I').format.column_width=20
+    else:
+        det.get_range('E:E').format.column_width=65
+        det.get_range('B:D').format.column_width=16
+        det.get_range('F:L').format.column_width=20
+    det.freeze_panes.freeze_rows(1)
     note=wb.worksheets.add('統計說明');instructions=[
-        ['項目','說明'],['計算範圍','僅使用程式判定 PASS 的量測；FAIL／不符合／待確認／規格差異均不納入'],
-        ['兩套規格','同一 PASS 候選資料各自按愷安 V1.1、達天 Log Limit 過濾；超規筆數獨立紀錄'],
+        ['項目','說明'],['計算範圍','RF須原始Log檔名PASS且個別量測PASS；BOB以個別量測PASS；FAIL／不符合／待確認／規格差異均不納入'],
+        ['兩套規格','愷安與達天Limit完全一致時合併為一列；不一致時兩列分別計算並可追溯'],
         ['雙側公式','min((USL-平均)/(3×樣本σ),(平均-LSL)/(3×樣本σ))'],
         ['單側公式','只有 USL 時為 (USL-平均)/(3×樣本σ)，稱 Ppu；只有 LSL 時為 Ppl'],
         ['重要統計限制','使用整體樣本標準差，故近似 Ppk/Ppu/Ppl 而非真正的組內σ Cpk；PASS-only會產生選擇偏差。平均與樣本σ用於內部運算，依V1.5.6需求不在主報表顯示'],

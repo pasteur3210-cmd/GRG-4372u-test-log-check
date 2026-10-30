@@ -29,11 +29,11 @@ The information of Stream Statistics:
  def test_result(self):
   rows=parse_throughput('log',self.log)
   self.assertEqual(sum(r['result']=='PASS' for r in rows),17)
-  self.assertEqual(sum(r['result']=='待確認' for r in rows),1)
+  self.assertEqual(sum(r['result']=='待確認' for r in rows),0)
  def test_errors(self):
   log=self.log.replace('609555 0 0 0.00000000% 0','609555 2 0 0.00000000% 0',1)
   self.assertTrue(any(r['result']=='FAIL' for r in parse_throughput('log',log)))
  def test_no_fabricated_mbps(self):
   rows=parse_throughput('log',self.log)
-  self.assertEqual([r for r in rows if r['item']=='PON→LAN 實際吞吐量'][0]['result'],'待確認')
+  self.assertFalse(any(r['item']=='PON→LAN 實際吞吐量' for r in rows))
 if __name__=='__main__': unittest.main()

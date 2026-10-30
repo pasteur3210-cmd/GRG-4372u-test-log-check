@@ -4,7 +4,7 @@ from pathlib import Path
 def make_report(rows,files,stats,out,rules,station=None):
  wb=Workbook.create()
  s=wb.worksheets.add('查核總覽')
- s.get_range('A1:D1').values=[['GRG-4372u Log 自動查核 V1.5.6','','','']]
+ s.get_range('A1:D1').values=[['GRG-4372u Log 自動查核 V1.5.7','','','']]
  s.get_range('A3:B7').values=[['產品',rules['metadata']['model']],['測試依據',rules['metadata']['test_standard']],['客製化依據',rules['metadata']['production_notice']],['判定原則','測試標準與Log Limit分別核對；缺證據不判PASS'],['安全原則','報告不輸出密碼明文']]
  s.get_range('A9:B9').values=[['判定','筆數']]
  states=['PASS','不符合','規格差異','FAIL','待確認','缺少證據']

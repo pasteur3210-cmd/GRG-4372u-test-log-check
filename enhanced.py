@@ -4,7 +4,7 @@ from inspector import decode,parse_wifi,checks,row,CONFIG
 from shipping_validator import pass_rules,DEFAULTS
 from report import make_report
 from throughput_parser import parse_throughput
-VERSION='1.5.6'
+VERSION='1.5.8'
 DIR=pathlib.Path(__file__).resolve().parent
 
 def entries(path):
