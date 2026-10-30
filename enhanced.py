@@ -4,7 +4,7 @@ from inspector import decode,parse_wifi,checks,row,CONFIG
 from shipping_validator import pass_rules,DEFAULTS
 from report import make_report
 from throughput_parser import parse_throughput
-VERSION='1.5.8'
+VERSION='1.5.9'
 DIR=pathlib.Path(__file__).resolve().parent
 
 def entries(path):
@@ -139,7 +139,7 @@ def parse_coupling(path,txt):
    note='未辨識到NFT測項；非產品FAIL，須更新解析或提供完整Log'))
  return out
 
-def audit(input_path,outdir,progress=None):
+def audit(input_path,outdir,progress=None,unit_ids=None):
  outdir=pathlib.Path(outdir);outdir.mkdir(parents=True,exist_ok=True)
  def notify(message):
   if progress:progress(message)
@@ -200,11 +200,16 @@ def audit(input_path,outdir,progress=None):
   notify('正在計算並輸出 RF／BOB 良品 Cpk')
   cpk_reports=produce_cpk_reports(rows,files,outdir,stamp,CONFIG)
   for key,value in cpk_reports.items():emit('CPK_REPORT='+key+' path='+value)
+  if unit_ids:
+   from unit_summary import build_unit_summaries
+   summaries=build_unit_summaries(input_path,rows,unit_ids,outdir/'Unit_Summary',progress=notify)
+   emit('UNIT_SUMMARIES '+json.dumps(summaries,ensure_ascii=False))
+  else:summaries=None
   emit('REPORT='+str(report));emit('STATION_REPORT_SUMMARY '+json.dumps(allocation,ensure_ascii=False));emit('END')
   notify('完成：全部 Excel 與 Run/Test/Debug Log 已輸出')
- return {'report':str(report),'run_log':str(execution),'test_log':str(test),'debug_log':str(debug),'files':len(files),'stations':dict(counts),'results':dict(states),'exceptions':exception_count,'station_reports':station_reports,'cpk_reports':cpk_reports,'report_allocation':allocation}
+ return {'report':str(report),'run_log':str(execution),'test_log':str(test),'debug_log':str(debug),'files':len(files),'stations':dict(counts),'results':dict(states),'exceptions':exception_count,'station_reports':station_reports,'cpk_reports':cpk_reports,'report_allocation':allocation,'unit_summaries':summaries}
 
-def gui(input_path,outdir):
+def gui(input_path,outdir,unit_ids=None):
  """Keep Tk on the main thread; worker communicates solely through a queue.
  Completion is driven by a terminal event, never by Progressbar state.
  """
@@ -230,7 +235,7 @@ def gui(input_path,outdir):
   display.configure(state='normal');display.insert('end',str(message)+'\n');display.see('end');display.configure(state='disabled')
  def worker():
   try:
-   result=audit(input_path,outdir,progress=lambda msg:q.put(('progress',msg)))
+   result=audit(input_path,outdir,progress=lambda msg:q.put(('progress',msg)),unit_ids=unit_ids)
    q.put(('done',result))
   except BaseException as ex:
    import traceback
@@ -271,14 +276,26 @@ def gui(input_path,outdir):
  return 0 if 'result' in result_holder else 2
 
 def main(argv=None):
- p=argparse.ArgumentParser();p.add_argument('input',nargs='?');p.add_argument('-o','--output-dir',default='audit_output');args=p.parse_args(argv)
+ p=argparse.ArgumentParser();p.add_argument('input',nargs='?');p.add_argument('-o','--output-dir',default='audit_output');p.add_argument('--unit-ids',default='',help='MAC/SN清單，逗號、空白或換行分隔');args=p.parse_args(argv)
  if not args.input:
   import tkinter as tk
   from tkinter import filedialog
   root=tk.Tk();root.withdraw();args.input=filedialog.askopenfilename(title='選擇ZIP／LOG',filetypes=[('Log archives','*.zip *.log *.txt')]);root.destroy()
   if not args.input:return 1
-  return gui(args.input,args.output_dir)
+  from tkinter import ttk
+  chooser=tk.Tk();chooser.title('V1.5.9｜單機／多機 Summary 查詢')
+  chooser.geometry('700x390');chooser.minsize(550,320)
+  f=ttk.Frame(chooser,padding=16);f.pack(fill='both',expand=True)
+  ttk.Label(f,text='輸入 MAC／SN（可混用，每行一個或以逗號分隔）',font=('Microsoft JhengHei UI',12,'bold')).pack(anchor='w')
+  ttk.Label(f,text='輸入後會產生每台獨立 Excel；留空則只產生原本各站報告。').pack(anchor='w',pady=(8,8))
+  box=tk.Text(f,height=10);box.pack(fill='both',expand=True)
+  choice={'ids':''}
+  def go():choice['ids']=box.get('1.0','end').strip();chooser.destroy()
+  ttk.Button(f,text='開始分析並產生報告',command=go).pack(anchor='e',pady=(10,0))
+  chooser.protocol('WM_DELETE_WINDOW',chooser.destroy)
+  chooser.mainloop()
+  return gui(args.input,args.output_dir,choice['ids'])
  try:
-  result=audit(args.input,args.output_dir,progress=lambda msg:print(msg,flush=True));print(json.dumps(result,ensure_ascii=False,indent=2));return 0
+  result=audit(args.input,args.output_dir,progress=lambda msg:print(msg,flush=True),unit_ids=args.unit_ids);print(json.dumps(result,ensure_ascii=False,indent=2));return 0
  except Exception as e:print(type(e).__name__,str(e),file=sys.stderr);return 2
 if __name__=='__main__':sys.exit(main())
