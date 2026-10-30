@@ -194,11 +194,29 @@ def build_unit_summaries(input_path,rows,ids,outdir,progress=None,raw_entries=No
         tm=re.search(r'(20\d{6})[_-](\d{6})',base)
         sort_key=(tm.group(1)+tm.group(2) if tm else '00000000000000',base)
         events[mac][station].append({'path':path,'time':tm.group(1)+' '+tm.group(2) if tm else 'Log未提供檔名時間','sort_key':sort_key,'rows':row_map.get(path,[])})
+    # Exact PCB Seq index; ambiguous identifiers must never resolve to an arbitrary unit.
+    seq_to_macs=collections.defaultdict(set)
+    sn_to_macs=collections.defaultdict(set)
+    for mapped_mac, mapped_unit in by_mac.items():
+        if mapped_unit['seq']:
+            seq_to_macs[mapped_unit['seq'].upper()].add(mapped_mac)
+        if mapped_unit['sn']:
+            sn_to_macs[mapped_unit['sn'].upper()].add(mapped_mac)
     query_rows=[]; results=[];seen=set()
     for identifier in requested:
-        mac=identifier if identifier in by_mac else sn_to_mac.get(identifier)
-        if not mac:
+        if identifier in by_mac:
+            candidates={identifier}
+        elif identifier in seq_to_macs:
+            candidates=seq_to_macs[identifier]
+        elif identifier in sn_to_macs:
+            candidates=sn_to_macs[identifier]
+        else:
+            candidates=set()
+        if len(candidates)>1:
+            query_rows.append([identifier,'TRACEABILITY CONFLICT',', '.join(sorted(candidates)),identifier if SEQ_RE.fullmatch(identifier) else '',identifier if identifier in sn_to_macs else '']);continue
+        if not candidates:
             query_rows.append([identifier,'NOT FOUND','','','']);continue
+        mac=next(iter(candidates))
         if mac in seen:
             query_rows.append([identifier,'DUPLICATE',mac,'','']);continue
         seen.add(mac)
