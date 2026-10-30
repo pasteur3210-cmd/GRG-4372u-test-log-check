@@ -4,7 +4,7 @@ from inspector import decode,parse_wifi,checks,row,CONFIG
 from shipping_validator import pass_rules,DEFAULTS
 from report import make_report
 from throughput_parser import parse_throughput
-VERSION='1.5.10'
+VERSION='1.5.11'
 DIR=pathlib.Path(__file__).resolve().parent
 
 def entries(path):
@@ -220,7 +220,7 @@ def gui(input_path,outdir,unit_ids=None):
  root.geometry('930x670');root.minsize(770,550)
  frame=ttk.Frame(root,padding=12);frame.pack(fill='both',expand=True)
  ttk.Label(frame,text='GRG-4372u 產測 Log 自動查核',font=('Microsoft JhengHei UI',15,'bold')).pack(anchor='w')
- source=tk.StringVar(value=str(input_path));status=tk.StringVar(value='可開始分析')
+ source=tk.StringVar(value=str(input_path or ''));status=tk.StringVar(value='請先選擇 Log 資料，再按整批 Log 分析')
  source_frame=ttk.Frame(frame);source_frame.pack(fill='x',pady=5)
  ttk.Label(source_frame,text='Log來源：').pack(side='left')
  ttk.Entry(source_frame,textvariable=source).pack(side='left',fill='x',expand=True)
@@ -277,7 +277,7 @@ def gui(input_path,outdir,unit_ids=None):
   status.set('正在產生單機 Summary');launch(task)
  def browse():
   from tkinter import filedialog
-  new=filedialog.askopenfilename(title='選擇 Log ZIP',filetypes=[('Log','*.zip *.log *.txt')])
+  new=filedialog.askopenfilename(title='選擇 Log ZIP／LOG',filetypes=[('Log','*.zip *.log *.txt')])
   if new and new!=source.get():
    source.set(new);state['ready']=False;state['rows']=None;state['input']=None;state['raw']=None;append('來源已更新，需重新分析新 Log');buttons()
  browse_btn=ttk.Button(actions,text='更換 Log來源',command=browse);browse_btn.pack(side='left',padx=3)
@@ -308,17 +308,13 @@ def gui(input_path,outdir,unit_ids=None):
      buttons()
   except queue.Empty:pass
   if root.winfo_exists():root.after(120,poll)
- root.after(120,poll);root.after(250,do_audit);root.mainloop()
+ root.after(120,poll);root.mainloop()
  return 0
 
 def main(argv=None):
  p=argparse.ArgumentParser();p.add_argument('input',nargs='?');p.add_argument('-o','--output-dir',default='audit_output');p.add_argument('--unit-ids',default='',help='MAC/SN清單，逗號、空白或換行分隔');args=p.parse_args(argv)
  if not args.input:
-  import tkinter as tk
-  from tkinter import filedialog
-  root=tk.Tk();root.withdraw();args.input=filedialog.askopenfilename(title='選擇ZIP／LOG',filetypes=[('Log archives','*.zip *.log *.txt')]);root.destroy()
-  if not args.input:return 1
-  return gui(args.input,args.output_dir,args.unit_ids)
+  return gui(None,args.output_dir,args.unit_ids)
  try:
   result=audit(args.input,args.output_dir,progress=lambda msg:print(msg,flush=True),unit_ids=args.unit_ids);print(json.dumps(result,ensure_ascii=False,indent=2));return 0
  except Exception as e:print(type(e).__name__,str(e),file=sys.stderr);return 2
