@@ -76,16 +76,38 @@ def _data(ws,headers,rows,widths=None):
         ws.get_range_by_indexes(0,idx,1,1).format.column_width=w
     ws.freeze_panes.freeze_rows(1)
 
+def failure_item(row):
+    """Confirmed item-level failures only; no inferred failure from station retry."""
+    if row.get('category') == 'ParserStatus':
+        return False
+    return str(row.get('result','')).upper() in ('FAIL','不符合')
+
+
+def failure_key(row):
+    return (str(row.get('item','')),str(row.get('mode','')),
+            str(row.get('freq_MHz','')),str(row.get('antenna','')))
+
+
+def failure_origin(rows):
+    """Only explicit failed measures count as defect origin."""
+    return {failure_key(r) for r in rows if failure_item(r)}
+
+
 def _write_unit(dest,unit,station_events,conflicts):
     wb=Workbook.create();mac=unit['mac'];seq=unit['seq'];sn=unit['sn']
-    summary=[];attempt_rows=[];detail_rows=[];history=[]
+    summary=[];attempt_rows=[];detail_rows=[];history=[]; unresolved=[]
     all_events=[]
     for station in STATIONS:
         ev=sorted(station_events.get(station,[]),key=lambda x:x['sort_key'])
         all_events.extend(ev)
         statuses=[status_for(e) for e in ev]
         attempts=len(ev);retry=max(0,attempts-1)
-        summary.append([station,attempts,retry,declared_for(ev[0]) if ev else 'NO EVIDENCE',declared_for(ev[-1]) if ev else 'NO EVIDENCE',statuses[-1] if statuses else 'NO EVIDENCE',', '.join(sorted({r['item'] for e in ev[1:] for r in e['rows'] if r['category']!='ParserStatus'})) if retry else '—','; '.join(pathlib.PurePosixPath(e['path']).name for e in ev)])
+        defects=set().union(*(failure_origin(e['rows']) for e in ev)) if ev else set()
+        names=', '.join(sorted({k[0] for k in defects})) if defects else ('FAIL原因未解析' if any(declared_for(e)=='FAIL' for e in ev) else '無已證實FAIL測項')
+        summary.append([station,attempts,retry,declared_for(ev[0]) if ev else 'NO EVIDENCE',declared_for(ev[-1]) if ev else 'NO EVIDENCE',statuses[-1] if statuses else 'NO EVIDENCE',names,'; '.join(pathlib.PurePosixPath(e['path']).name for e in ev)])
+        for n,e in enumerate(ev,1):
+            if declared_for(e)=='FAIL' and not failure_origin(e['rows']):
+                unresolved.append([station,n,e['path'],'整站FAIL，但沒有可確認的FAIL測項；不可推定全部測項FAIL'])
         for n,e in enumerate(ev,1):
             history.append([station,n,e['time'],declared_for(e),status_for(e),e['path'],len(e['rows'])])
             for r in e['rows']:
@@ -101,7 +123,9 @@ def _write_unit(dest,unit,station_events,conflicts):
                     per[key]+=1
                     key=key+(per[key],)
                     keys.setdefault(key,[])
+            defect_keys=set().union(*(failure_origin(e['rows']) for e in ev))
             for key in keys:
+                if key[:4] not in defect_keys:continue
                 vals=[]
                 for e in ev:
                     relevant=[r for r in e['rows'] if (r['item'],r['mode'],str(r['freq_MHz']),r['antenna'])==key[:4]]
@@ -114,8 +138,10 @@ def _write_unit(dest,unit,station_events,conflicts):
     ws=wb.worksheets.add('01_單機Summary')
     meta=[['項目','結果'],['Model','GRG-4372u'],['MAC',mac],['SN',sn or 'NO EVIDENCE'],['PCB Seq',seq or 'NO EVIDENCE'],['有效測站數',observed],['有複測測站數',retested],['站別複測率',f'{retested}/{observed} ({retested/observed:.1%})' if observed else 'N/A'],['總複測次數',total_retry],['識別衝突', '有' if any(mac in c[0] for c in conflicts) else '無'],['說明','複測=同測站超過一份不同來源 Log；不等於單份 Log 中多個量測點。']]
     _data(ws,['設備資訊','數值'],meta[1:],[27,70])
+    issues=wb.worksheets.add('06_FAIL原因未解析')
+    _data(issues,['測站','第幾次','來源Log','原因'],unresolved or [['無','','','']], [21,14,90,72])
     st=wb.worksheets.add('02_各站結果')
-    _data(st,['測站','測試次數','複測次數','初測Log結果','最終Log結果','QA查核結果','複測測項','來源Log'],summary,[19,15,15,17,17,18,54,85])
+    _data(st,['測站','測試次數','複測次數','初測Log結果','最終Log結果','QA查核結果','已證實FAIL測項','來源Log'],summary,[19,15,15,17,17,18,54,85])
     ret=wb.worksheets.add('03_複測履歷對照')
     max_attempt=max((len(x[2]) for x in attempt_rows),default=0)
     headers=['測站','測項','Mode','MHz','天線','同測項序次']
@@ -127,7 +153,7 @@ def _write_unit(dest,unit,station_events,conflicts):
         r=[station,*key[:4],key[4]]
         for v in vals:r.extend([v['standard'],str(v['actual']),v['result'],pathlib.PurePosixPath(v['file']).name] if v else ['','','',''])
         r+=['']*(len(headers)-len(r));matrix.append(r)
-    if not matrix:matrix=[['沒有偵測到相同測站重複 Log；無複測履歷']]+['']*(len(headers)-1)
+    if not matrix:matrix=[['無已證實FAIL測項的複測對照；可於測試次數頁查看重測事件']]+['']*(len(headers)-1)
     _data(ret,headers,matrix,[18,30,18,12,12,13]+[34,22,14,47]*max_attempt)
     hist=wb.worksheets.add('04_測試次數與來源')
     _data(hist,['測站','第幾次','來源時間','原始Log結果','QA查核結果','原始路徑','測項數'],history,[18,12,24,19,19,90,13])
@@ -136,10 +162,10 @@ def _write_unit(dest,unit,station_events,conflicts):
     SpreadsheetFile.export_xlsx(wb).save(str(dest))
     return {'mac':mac,'sn':sn,'pcb_seq':seq,'file':str(dest),'retry_stations':retested,'retests':total_retry,'stations_observed':observed}
 
-def build_unit_summaries(input_path,rows,ids,outdir,progress=None):
+def build_unit_summaries(input_path,rows,ids,outdir,progress=None,raw_entries=None):
     outdir=pathlib.Path(outdir);outdir.mkdir(parents=True,exist_ok=True)
     requested=[i.strip().upper().replace(':','').replace('-','') if re.fullmatch(r'(?:[0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}',i) else i.strip().upper() for i in ID_SPLIT.split(ids or '') if i.strip()]
-    raw=list(entries(input_path))
+    raw=list(entries(input_path)) if raw_entries is None else raw_entries
     by_mac,sn_to_mac,conflicts=identify(raw)
     row_map=collections.defaultdict(list)
     for r in rows:row_map[r['file']].append(r)

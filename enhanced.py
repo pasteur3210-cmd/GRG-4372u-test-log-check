@@ -4,7 +4,7 @@ from inspector import decode,parse_wifi,checks,row,CONFIG
 from shipping_validator import pass_rules,DEFAULTS
 from report import make_report
 from throughput_parser import parse_throughput
-VERSION='1.5.9'
+VERSION='1.5.10'
 DIR=pathlib.Path(__file__).resolve().parent
 
 def entries(path):
@@ -210,70 +210,106 @@ def audit(input_path,outdir,progress=None,unit_ids=None):
  return {'report':str(report),'run_log':str(execution),'test_log':str(test),'debug_log':str(debug),'files':len(files),'stations':dict(counts),'results':dict(states),'exceptions':exception_count,'station_reports':station_reports,'cpk_reports':cpk_reports,'report_allocation':allocation,'unit_summaries':summaries}
 
 def gui(input_path,outdir,unit_ids=None):
- """Keep Tk on the main thread; worker communicates solely through a queue.
- Completion is driven by a terminal event, never by Progressbar state.
+ """Persistent Tk GUI: audit once, then query more units from the in-memory rows.
+    All Excel/file work is on a worker, all Tk calls stay on the main thread.
  """
  import tkinter as tk, threading, queue, os, time
  from tkinter import ttk, messagebox
- root=tk.Tk()
- root.title('GRG4372 LogInspector '+VERSION+'｜執行狀態')
- root.geometry('820x500'); root.minsize(680,400)
- frame=ttk.Frame(root,padding=14);frame.pack(fill='both',expand=True)
+ from unit_summary import build_unit_summaries
+ root=tk.Tk();root.title('GRG4372 LogInspector '+VERSION+'｜查核與單機查詢')
+ root.geometry('930x670');root.minsize(770,550)
+ frame=ttk.Frame(root,padding=12);frame.pack(fill='both',expand=True)
  ttk.Label(frame,text='GRG-4372u 產測 Log 自動查核',font=('Microsoft JhengHei UI',15,'bold')).pack(anchor='w')
- ttk.Label(frame,text='來源：'+str(input_path),wraplength=780).pack(anchor='w',pady=(8,4))
- status=tk.StringVar(value='準備開始')
- ttk.Label(frame,textvariable=status).pack(anchor='w',pady=5)
- bar=ttk.Progressbar(frame,mode='indeterminate');bar.pack(fill='x',pady=6);bar.start(12)
- display=tk.Text(frame,height=14,wrap='word',state='disabled');display.pack(fill='both',expand=True)
- actions=ttk.Frame(frame);actions.pack(fill='x',pady=(8,0))
- open_btn=ttk.Button(actions,text='開啟報告資料夾',state='disabled',command=lambda:os.startfile(os.path.abspath(outdir)))
- open_btn.pack(side='right')
- close_btn=ttk.Button(actions,text='關閉',command=root.destroy)
- close_btn.pack(side='right',padx=8)
- q=queue.Queue(); result_holder={}; state={'finished':False,'processed':0}; started=time.monotonic()
- def append(message):
-  display.configure(state='normal');display.insert('end',str(message)+'\n');display.see('end');display.configure(state='disabled')
- def worker():
-  try:
-   result=audit(input_path,outdir,progress=lambda msg:q.put(('progress',msg)),unit_ids=unit_ids)
-   q.put(('done',result))
-  except BaseException as ex:
-   import traceback
-   q.put(('error',(str(ex),traceback.format_exc())))
- def finish(kind,payload):
-  if state['finished']:return
-  state['finished']=True
-  bar.stop();bar.configure(mode='determinate',maximum=100,value=100 if kind=='done' else 0)
-  elapsed=time.monotonic()-started
-  if kind=='done':
-   result_holder['result']=payload
-   status.set('✅ 執行完成：{} 份 Log（耗時 {:.1f} 秒）'.format(payload['files'],elapsed))
-   append('完成：{} 份 Log；解析例外 {}；產生 {} 份分站 Excel、{} 份 Cpk Excel'.format(payload['files'],payload['exceptions'],len(payload['station_reports']),len(payload['cpk_reports'])))
-   append('總報告：'+payload['report']);append('執行紀錄：'+payload['run_log'])
-   open_btn.configure(state='normal')
-   messagebox.showinfo('查核完成','全部報告與 Log 已輸出。\n處理 {} 份 Log，耗時 {:.1f} 秒。'.format(payload['files'],elapsed))
-  else:
-   msg,trace=payload;result_holder['error']=trace
-   status.set('❌ 執行失敗：'+msg);append('ERROR: '+trace)
-   open_btn.configure(state='normal')
-   messagebox.showerror('查核失敗',msg+'\n請查看執行紀錄')
+ source=tk.StringVar(value=str(input_path));status=tk.StringVar(value='可開始分析')
+ source_frame=ttk.Frame(frame);source_frame.pack(fill='x',pady=5)
+ ttk.Label(source_frame,text='Log來源：').pack(side='left')
+ ttk.Entry(source_frame,textvariable=source).pack(side='left',fill='x',expand=True)
+ state={'busy':False,'ready':False,'rows':None,'input':None,'last':None,'raw':None};q=queue.Queue()
+ bar=ttk.Progressbar(frame,mode='indeterminate');bar.pack(fill='x',pady=(4,3))
+ ttk.Label(frame,textvariable=status).pack(anchor='w',pady=2)
+ actions=ttk.Frame(frame);actions.pack(fill='x',pady=5)
+ unit_frame=ttk.LabelFrame(frame,text='單機／多機 Summary 查詢（每行一個 MAC／SN）',padding=8);unit_frame.pack(fill='x',pady=4)
+ ids=tk.Text(unit_frame,height=5,wrap='word');ids.pack(fill='both',expand=True)
+ if unit_ids:ids.insert('1.0',unit_ids)
+ unit_actions=ttk.Frame(unit_frame);unit_actions.pack(fill='x',pady=4)
+ display=tk.Text(frame,height=15,wrap='word',state='disabled');display.pack(fill='both',expand=True)
+ footer=ttk.Frame(frame);footer.pack(fill='x',pady=5)
+ def append(msg):
+  display.configure(state='normal');display.insert('end',str(msg)+'\n');display.see('end');display.configure(state='disabled')
+ def buttons():
+  audit_btn.configure(state='disabled' if state['busy'] else 'normal')
+  query_btn.configure(state='normal' if state['ready'] and not state['busy'] else 'disabled')
+  browse_btn.configure(state='disabled' if state['busy'] else 'normal')
+ def launch(task):
+  if state['busy']:return
+  state['busy']=True;buttons();bar.start(15)
+  def worker():
+   try:q.put(('done',task(),None))
+   except BaseException as ex:q.put(('error',str(ex),__import__('traceback').format_exc()))
+  threading.Thread(target=worker,daemon=True).start()
+ def do_audit():
+  path=source.get().strip()
+  if not path or not pathlib.Path(path).is_file():messagebox.showerror('來源錯誤','請選擇有效的 ZIP／Log 檔');return
+  state['ready']=False;state['rows']=None;state['input']=None;state['raw']=None
+  def task():
+   result=audit(path,outdir,progress=lambda msg:q.put(('progress',msg)))
+   # Cache the parsed rows once for repeated independent unit queries.
+   row_cache=[];raw_cache=list(entries(path))
+   for name,txt in raw_cache:
+    c=category(name,txt)
+    try:
+     rr=parse_wifi(name,txt) if c=='WiFi' else parse_bob(name,txt) if c=='BOB' else parse_coupling(name,txt) if c=='Coupling' else parse_throughput(name,txt) if c=='Throughput' else checks(name,txt,c)
+     if c=='InformationWrite':rr,_=writing(name,txt)
+     if c=='InformationCheck':rr+=checks(name,txt,c)
+     row_cache.extend(rr)
+    except Exception as ex:q.put(('progress','單機索引解析警示：'+name+' '+str(ex)))
+   return ('audit',result,row_cache,path,raw_cache)
+  status.set('正在分析整批 Log');launch(task)
+ def do_query():
+  values=ids.get('1.0','end').strip()
+  if not values:messagebox.showwarning('輸入資料','請輸入至少一組 MAC 或 SN');return
+  if not state['ready']:messagebox.showwarning('請先分析','請先執行整批 Log 分析');return
+  path=state['input'];rows=state['rows'];raw_cache=state['raw']
+  def task():
+   output=pathlib.Path(outdir)/'Unit_Summary'
+   res=build_unit_summaries(path,rows,values,output,progress=lambda msg:q.put(('progress',msg)),raw_entries=raw_cache)
+   return ('query',res)
+  status.set('正在產生單機 Summary');launch(task)
+ def browse():
+  from tkinter import filedialog
+  new=filedialog.askopenfilename(title='選擇 Log ZIP',filetypes=[('Log','*.zip *.log *.txt')])
+  if new and new!=source.get():
+   source.set(new);state['ready']=False;state['rows']=None;state['input']=None;state['raw']=None;append('來源已更新，需重新分析新 Log');buttons()
+ browse_btn=ttk.Button(actions,text='更換 Log來源',command=browse);browse_btn.pack(side='left',padx=3)
+ audit_btn=ttk.Button(actions,text='① 整批 Log 分析',command=do_audit);audit_btn.pack(side='left',padx=4)
+ query_btn=ttk.Button(unit_actions,text='② 產生選定 MAC／SN Summary',command=do_query);query_btn.pack(side='right')
+ ttk.Button(footer,text='開啟報告資料夾',command=lambda:os.startfile(os.path.abspath(outdir)) if hasattr(os,'startfile') else None).pack(side='right',padx=3)
+ ttk.Button(footer,text='結束',command=root.destroy).pack(side='right',padx=3)
+ buttons()
  def poll():
-  if state['finished']:return
   try:
    while True:
-    kind,msg=q.get_nowait()
-    if kind=='progress':status.set(msg);append(msg)
-    elif kind in ('done','error'):
-     finish(kind,msg)
-     break
+    event=q.get_nowait()
+    kind,payload=event[:2];extra=event[2] if len(event)>2 else None
+    if kind=='progress':status.set(payload);append(payload)
+    elif kind=='error':
+     state['busy']=False;bar.stop();status.set('執行失敗：'+payload);append(extra);buttons();messagebox.showerror('執行失敗',payload)
+    elif kind=='done':
+     state['busy']=False;bar.stop()
+     if payload[0]=='audit':
+      _,result,row_cache,path,raw_cache=payload
+      state.update(ready=True,rows=row_cache,input=path,last=result,raw=raw_cache)
+      status.set('整批分析完成，已建立單機索引，可以繼續輸入 MAC／SN 查詢')
+      append('整批完成：'+str(result['files'])+' 份 Log；單機索引 '+str(len(row_cache))+' 筆')
+      if ids.get('1.0','end').strip():root.after(150,do_query)
+     else:
+      res=payload[1];status.set('完成：'+str(res['generated'])+' 份單機報告')
+      append('單機報告 '+str(res['generated'])+' 份，找不到 '+str(res['missing'])+' 筆，查詢清單：'+res['index'])
+     buttons()
   except queue.Empty:pass
-  if not state['finished']:
-   # Do not test bar.cget('mode'): GUI must poll regardless of progress-bar state.
-   root.after(100,poll)
- threading.Thread(target=worker,daemon=True).start()
- root.after(100,poll)
- root.mainloop()
- return 0 if 'result' in result_holder else 2
+  if root.winfo_exists():root.after(120,poll)
+ root.after(120,poll);root.after(250,do_audit);root.mainloop()
+ return 0
 
 def main(argv=None):
  p=argparse.ArgumentParser();p.add_argument('input',nargs='?');p.add_argument('-o','--output-dir',default='audit_output');p.add_argument('--unit-ids',default='',help='MAC/SN清單，逗號、空白或換行分隔');args=p.parse_args(argv)
@@ -282,19 +318,7 @@ def main(argv=None):
   from tkinter import filedialog
   root=tk.Tk();root.withdraw();args.input=filedialog.askopenfilename(title='選擇ZIP／LOG',filetypes=[('Log archives','*.zip *.log *.txt')]);root.destroy()
   if not args.input:return 1
-  from tkinter import ttk
-  chooser=tk.Tk();chooser.title('V1.5.9｜單機／多機 Summary 查詢')
-  chooser.geometry('700x390');chooser.minsize(550,320)
-  f=ttk.Frame(chooser,padding=16);f.pack(fill='both',expand=True)
-  ttk.Label(f,text='輸入 MAC／SN（可混用，每行一個或以逗號分隔）',font=('Microsoft JhengHei UI',12,'bold')).pack(anchor='w')
-  ttk.Label(f,text='輸入後會產生每台獨立 Excel；留空則只產生原本各站報告。').pack(anchor='w',pady=(8,8))
-  box=tk.Text(f,height=10);box.pack(fill='both',expand=True)
-  choice={'ids':''}
-  def go():choice['ids']=box.get('1.0','end').strip();chooser.destroy()
-  ttk.Button(f,text='開始分析並產生報告',command=go).pack(anchor='e',pady=(10,0))
-  chooser.protocol('WM_DELETE_WINDOW',chooser.destroy)
-  chooser.mainloop()
-  return gui(args.input,args.output_dir,choice['ids'])
+  return gui(args.input,args.output_dir,args.unit_ids)
  try:
   result=audit(args.input,args.output_dir,progress=lambda msg:print(msg,flush=True),unit_ids=args.unit_ids);print(json.dumps(result,ensure_ascii=False,indent=2));return 0
  except Exception as e:print(type(e).__name__,str(e),file=sys.stderr);return 2
